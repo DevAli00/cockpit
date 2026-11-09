@@ -1,6 +1,7 @@
 """Writes the Homebrew cask (Casks/cockpit.rb) and the Scoop manifest (bucket/cockpit.json) for a release.
 
-Usage: write-manifests.py --version 0.1.0 --repo Owner/repo --dmg-sha256 <hex> --zip-sha256 <hex> [--base-url URL]
+Usage: write-manifests.py --version 0.1.0 --repo Owner/repo --dmg-sha256 <hex> --zip-sha256 <hex>
+       [--min-macos 11.0] [--base-url URL]
 The release workflow runs it; --base-url exists so the manifests can be tested against local files.
 """
 from __future__ import annotations
@@ -13,6 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DESCRIPTION = "Personal cockpit for tasks, goals, learning, trips and money"
 
+MACOS_NAMES = {11: "big_sur", 12: "monterey", 13: "ventura", 14: "sonoma", 15: "sequoia", 26: "tahoe"}
+
 CASK = '''cask "cockpit" do
   version "{version}"
   sha256 "{dmg_sha}"
@@ -23,7 +26,7 @@ CASK = '''cask "cockpit" do
   homepage "{homepage}"
 
   depends_on arch: :arm64
-  depends_on macos: :monterey
+  depends_on macos: :{macos}
 
   app "Cockpit.app"
 
@@ -50,10 +53,15 @@ def main() -> None:
     p.add_argument("--repo", required=True, help="GitHub owner/name")
     p.add_argument("--dmg-sha256", required=True, type=sha)
     p.add_argument("--zip-sha256", required=True, type=sha)
+    p.add_argument("--min-macos", default="12.0", help="oldest macOS the .dmg runs on, e.g. 11.0")
     p.add_argument("--base-url", help="where the release files are (default: the GitHub release for this version)")
     a = p.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+", a.version):
         p.error("version must look like 1.2.3")
+
+    macos = MACOS_NAMES.get(int(a.min_macos.split(".")[0]))
+    if macos is None:
+        p.error(f"no Homebrew name known for macOS {a.min_macos}: add it to MACOS_NAMES")
 
     homepage = f"https://github.com/{a.repo}"
     releases = f"{homepage}/releases/download"
@@ -66,7 +74,7 @@ def main() -> None:
     cask = ROOT / "Casks" / "cockpit.rb"
     cask.parent.mkdir(exist_ok=True)
     cask.write_text(CASK.format(version=a.version, dmg_sha=a.dmg_sha256, mac_url=mac_url,
-                                description=DESCRIPTION, homepage=homepage), encoding="utf-8")
+                                description=DESCRIPTION, homepage=homepage, macos=macos), encoding="utf-8")
 
     manifest = {
         "version": a.version,

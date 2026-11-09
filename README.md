@@ -47,6 +47,10 @@ Good to know:
   daily copy kept for 14 days. Uninstalling the app does not delete it.
 - Intel Macs are not supported by the packaged app yet.
 
+**Uninstall:** `brew uninstall --cask cockpit` (Mac), `scoop uninstall cockpit` (Windows), or *Settings → Apps →
+Cockpit → Uninstall* if you used the Windows installer. Drag the app to the Bin if you used the `.dmg`.
+Your data is left in place; delete the data folder above to remove it too.
+
 ## Personal first, business optional
 
 Settings → *Show business tools* hides projects, clients and business finances entirely (nothing is deleted).
@@ -194,6 +198,18 @@ Schema change: edit `app/db/models.py`, then `alembic revision --autogenerate -m
 - No CSRF token: `SameSite=Strict` cookies plus JSON-only bodies cover the realistic cases, but this is defence by browser behaviour.
 - Search is `ILIKE` over a few tables: ample for personal data volumes, not a full-text engine.
 - Frontend has unit tests for its pure helpers and API client only; pages were checked by hand against the running stack.
+
+## Code signing policy
+
+The Windows and macOS builds are **not code-signed yet**. Every release is built from this repository by
+GitHub Actions ([workflow](.github/workflows/desktop.yml)) and published with SHA-256 checksums.
+
+- Committers, reviewers and approvers: [DevAli00](https://github.com/DevAli00) (sole maintainer). Changes
+  from anyone else arrive as pull requests and are reviewed before merging; every release is approved by the
+  maintainer.
+- Privacy: this program will not transfer any information to other networked systems unless specifically
+  requested by the user or the person installing or operating it. It has no telemetry, no accounts and no
+  update checks; your data stays in a file on your computer.
 
 ## License
 

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   homebrew:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Install with Homebrew
         run: |

@@ -27,8 +27,8 @@ jobs:
         include: >-
           ${{ fromJSON(
             inputs.target == 'windows-x64' && '[{"os":"windows-latest","name":"windows-x64"}]' ||
-            inputs.target == 'mac-arm64' && '[{"os":"macos-14","name":"mac-arm64"}]' ||
-            '[{"os":"macos-14","name":"mac-arm64"},{"os":"windows-latest","name":"windows-x64"}]'
+            inputs.target == 'mac-arm64' && '[{"os":"macos-latest","name":"mac-arm64"}]' ||
+            '[{"os":"macos-latest","name":"mac-arm64"},{"os":"windows-latest","name":"windows-x64"}]'
           ) }}
     runs-on: ${{ matrix.os }}
     env:
@@ -85,6 +85,7 @@ jobs:
           New-Item -ItemType Directory -Force selftest-data | Out-Null
           $env:COCKPIT_DATA_DIR = "$PWD\selftest-data"
           $env:COCKPIT_SELFTEST = "$PWD\selftest.json"
+          (Get-Item "build\desktop\dist\Cockpit\Cockpit.exe").VersionInfo | Format-List ProductName, ProductVersion, FileVersion
           $p = Start-Process -FilePath "build\desktop\dist\Cockpit\Cockpit.exe" -PassThru
           if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Host "self-test timed out" }
           if (Test-Path selftest.json) { Get-Content selftest.json } else { Write-Host "no self-test report" }
@@ -127,6 +128,7 @@ jobs:
           (cd out && sha256sum Cockpit-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
           gh release create "$TAG" out/* --verify-tag --title "Cockpit $VERSION" --notes-file desktop/RELEASE_NOTES.md
           python3 scripts/write-manifests.py --version "$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --min-macos "$(cat artifacts/*/dist-desktop/Cockpit-"$VERSION"-mac-arm64.min-macos.txt)" \
             --dmg-sha256 "$(sha256sum out/Cockpit-"$VERSION"-mac-arm64.dmg | cut -d' ' -f1)" \
             --zip-sha256 "$(sha256sum out/Cockpit-"$VERSION"-windows-x64.zip | cut -d' ' -f1)"
           git config user.name "github-actions[bot]"

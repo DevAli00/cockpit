@@ -1,0 +1,62 @@
+# Installs the published release exactly as the README tells people to (Homebrew on macOS, Scoop on
+# Windows) on clean machines, then runs the installed app's self-test.
+name: Verify install
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew:
+    runs-on: macos-14
+    steps:
+      - name: Install with Homebrew
+        run: |
+          brew --version
+          brew tap devali00/cockpit "https://github.com/${{ github.repository }}"
+          brew install --cask devali00/cockpit/cockpit
+      - name: Quarantine flag
+        run: |
+          if xattr -l /Applications/Cockpit.app | grep -q com.apple.quarantine; then
+            echo "::error::the app is still quarantined: macOS will refuse to open it"; exit 1
+          fi
+          echo "not quarantined"
+      - name: Self-test the installed app
+        run: |
+          mkdir -p "$RUNNER_TEMP/data"
+          COCKPIT_DATA_DIR="$RUNNER_TEMP/data" COCKPIT_SELFTEST="$RUNNER_TEMP/report.json" \
+            /Applications/Cockpit.app/Contents/MacOS/Cockpit &
+          pid=$!
+          for i in $(seq 1 90); do kill -0 $pid 2>/dev/null || break; sleep 1; done
+          kill $pid 2>/dev/null || true
+          cat "$RUNNER_TEMP/report.json" || true
+          tail -20 "$RUNNER_TEMP/data/cockpit.log" || true
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get('ready') and d['me']['status']==200 and d['taskCreated']==201 and d['backup']['status']==200 else 1)" "$RUNNER_TEMP/report.json"
+
+  scoop:
+    runs-on: windows-latest
+    steps:
+      - name: Install with Scoop
+        shell: pwsh
+        run: |
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          scoop bucket add cockpit "https://github.com/${{ github.repository }}"
+          scoop install cockpit/cockpit
+          if (-not (Test-Path "$env:USERPROFILE\scoop\apps\cockpit\current\Cockpit.exe")) { throw "Cockpit.exe was not installed" }
+      - name: Self-test the installed app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\data" | Out-Null
+          $env:COCKPIT_DATA_DIR = "$env:RUNNER_TEMP\data"
+          $env:COCKPIT_SELFTEST = "$env:RUNNER_TEMP\report.json"
+          $p = Start-Process -FilePath "$env:USERPROFILE\scoop\apps\cockpit\current\Cockpit.exe" -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Host "self-test timed out" }
+          if (Test-Path "$env:RUNNER_TEMP\data\cockpit.log") { Get-Content "$env:RUNNER_TEMP\data\cockpit.log" -Tail 20 }
+          if (-not (Test-Path $env:COCKPIT_SELFTEST)) { throw "no self-test report" }
+          Get-Content $env:COCKPIT_SELFTEST
+          $d = Get-Content $env:COCKPIT_SELFTEST -Raw | ConvertFrom-Json
+          if (-not ($d.ready -and $d.me.status -eq 200 -and $d.taskCreated -eq 201 -and $d.backup.status -eq 200)) { throw "self-test failed" }

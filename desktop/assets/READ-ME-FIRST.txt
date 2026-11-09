@@ -1,0 +1,14 @@
+COCKPIT
+
+1. Drag Cockpit onto the Applications folder.
+2. Open it from Applications.
+
+The first time, macOS will say it cannot check the app (it is not signed with a paid Apple
+developer certificate). To allow it:
+   System Settings > Privacy & Security > scroll down > "Open Anyway" next to Cockpit.
+You only do this once.
+
+Your data stays on this Mac, in:
+   ~/Library/Application Support/Cockpit
+A copy of the data file is kept there every day (folder "backups", last 14 days).
+To move your data to another computer: Settings & data > Backup > Download backup.

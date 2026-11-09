@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cockpit
+      POSTGRES_DB: cockpit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./scripts/init-env.sh first}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cockpit -d cockpit"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      COCKPIT_DATABASE_URL: postgresql+asyncpg://cockpit:${POSTGRES_PASSWORD}@db:5432/cockpit
+      COCKPIT_SECRET_KEY: ${COCKPIT_SECRET_KEY:?run ./scripts/init-env.sh first}
+      COCKPIT_ADMIN_EMAIL: ${COCKPIT_ADMIN_EMAIL:?run ./scripts/init-env.sh first}
+      COCKPIT_ADMIN_PASSWORD: ${COCKPIT_ADMIN_PASSWORD:?run ./scripts/init-env.sh first}
+      COCKPIT_COOKIE_SECURE: ${COCKPIT_COOKIE_SECURE:-false}
+    networks: [internal]
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on: [backend]
+    ports:
+      - "127.0.0.1:${COCKPIT_PORT:-8080}:80"
+    networks: [internal]
+
+volumes:
+  pgdata:
+
+networks:
+  internal:

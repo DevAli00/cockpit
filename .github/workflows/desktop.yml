@@ -1,0 +1,140 @@
+# Builds the desktop installers: macOS .dmg (Apple Silicon), Windows x64 setup .exe and .zip.
+# - Actions tab -> "Run workflow": build only (files are attached to the run).
+# - Pushing a tag like v0.1.0: build, publish a GitHub release, update the Homebrew cask and the
+#   Scoop manifest, then install the release on clean machines to check it works.
+name: Desktop builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which installer to build
+        type: choice
+        options: [windows-x64, mac-arm64, all]
+        default: windows-x64
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # A tag push has no input and builds everything.
+        include: >-
+          ${{ fromJSON(
+            inputs.target == 'windows-x64' && '[{"os":"windows-latest","name":"windows-x64"}]' ||
+            inputs.target == 'mac-arm64' && '[{"os":"macos-14","name":"mac-arm64"}]' ||
+            '[{"os":"macos-14","name":"mac-arm64"},{"os":"windows-latest","name":"windows-x64"}]'
+          ) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+
+      - name: Install build tools
+        run: python -m pip install -e "backend[dev,desktop]"
+
+      - name: Backend tests
+        working-directory: backend
+        run: python -m pytest -q
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: ./scripts/build-desktop.sh
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-desktop.ps1
+
+      # Starts the packaged app once, signs in through the real window, creates a task and saves a
+      # backup, then quits. Informational: a headless runner may not be able to show a window.
+      - name: Self-test the packaged app (macOS)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          mkdir -p selftest-data
+          COCKPIT_DATA_DIR="$PWD/selftest-data" COCKPIT_SELFTEST="$PWD/selftest.json" \
+            build/desktop/dist/Cockpit.app/Contents/MacOS/Cockpit
+          cat selftest.json
+
+      - name: Self-test the packaged app (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force selftest-data | Out-Null
+          $env:COCKPIT_DATA_DIR = "$PWD\selftest-data"
+          $env:COCKPIT_SELFTEST = "$PWD\selftest.json"
+          $p = Start-Process -FilePath "build\desktop\dist\Cockpit\Cockpit.exe" -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); Write-Host "self-test timed out" }
+          if (Test-Path selftest.json) { Get-Content selftest.json } else { Write-Host "no self-test report" }
+          if (Test-Path selftest-data\cockpit.log) { Get-Content selftest-data\cockpit.log -Tail 30 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cockpit-${{ matrix.name }}
+          path: |
+            dist-desktop/*
+            selftest.json
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main }  # the cask and Scoop manifest are committed to main
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Publish the release and update the manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          CODE_VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('backend/pyproject.toml','rb'))['project']['version'])")
+          if [ "$VERSION" != "$CODE_VERSION" ]; then
+            echo "::error::tag $TAG does not match the version in backend/pyproject.toml ($CODE_VERSION)"; exit 1
+          fi
+          mkdir out
+          cp artifacts/*/dist-desktop/Cockpit-"$VERSION"-mac-arm64.dmg \
+             artifacts/*/dist-desktop/Cockpit-"$VERSION"-windows-x64-setup.exe \
+             artifacts/*/dist-desktop/Cockpit-"$VERSION"-windows-x64.zip out/
+          (cd out && sha256sum Cockpit-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          gh release create "$TAG" out/* --verify-tag --title "Cockpit $VERSION" --notes-file desktop/RELEASE_NOTES.md
+          python3 scripts/write-manifests.py --version "$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --dmg-sha256 "$(sha256sum out/Cockpit-"$VERSION"-mac-arm64.dmg | cut -d' ' -f1)" \
+            --zip-sha256 "$(sha256sum out/Cockpit-"$VERSION"-windows-x64.zip | cut -d' ' -f1)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks bucket
+          git commit -m "chore: publish $VERSION to Homebrew and Scoop"
+          git push origin HEAD:main
+
+  verify:
+    needs: release
+    uses: ./.github/workflows/verify-install.yml

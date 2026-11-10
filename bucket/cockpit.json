@@ -1,0 +1,28 @@
+{
+    "version": "0.1.0",
+    "description": "Personal cockpit for tasks, goals, learning, trips and money",
+    "homepage": "https://github.com/DevAli00/cockpit",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/DevAli00/cockpit/releases/download/v0.1.0/Cockpit-0.1.0-windows-x64.zip",
+            "hash": "dfeab2522ee9d8444debf6d15ba1796b11f3277c620ef7b50701876dd018534d",
+            "extract_dir": "Cockpit"
+        }
+    },
+    "shortcuts": [
+        [
+            "Cockpit.exe",
+            "Cockpit"
+        ]
+    ],
+    "notes": "Your data is kept in %APPDATA%\\Cockpit. Uninstalling does not delete it.",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/DevAli00/cockpit/releases/download/v$version/Cockpit-$version-windows-x64.zip"
+            }
+        }
+    }
+}

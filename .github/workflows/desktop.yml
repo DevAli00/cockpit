@@ -31,6 +31,7 @@ jobs:
             '[{"os":"macos-latest","name":"mac-arm64"},{"os":"windows-latest","name":"windows-x64"}]'
           ) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       PYTHON: python
     steps:
@@ -67,19 +68,23 @@ jobs:
         run: ./scripts/build-desktop.ps1
 
       # Starts the packaged app once, signs in through the real window, creates a task and saves a
-      # backup, then quits. Informational: a headless runner may not be able to show a window.
+      # backup, then quits. Informational: a headless runner may not be able to show a window. The
+      # app gives up by itself after 90 seconds; the step limit is the backstop.
       - name: Self-test the packaged app (macOS)
         if: runner.os == 'macOS'
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           mkdir -p selftest-data
           COCKPIT_DATA_DIR="$PWD/selftest-data" COCKPIT_SELFTEST="$PWD/selftest.json" \
-            build/desktop/dist/Cockpit.app/Contents/MacOS/Cockpit
-          cat selftest.json
+            build/desktop/dist/Cockpit.app/Contents/MacOS/Cockpit || echo "self-test exit code: $?"
+          cat selftest.json || echo "no self-test report"
+          tail -30 selftest-data/cockpit.log || true
 
       - name: Self-test the packaged app (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
+        timeout-minutes: 5
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force selftest-data | Out-Null
@@ -97,12 +102,14 @@ jobs:
           path: |
             dist-desktop/*
             selftest.json
+            selftest-data/cockpit.log
           if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -121,14 +128,21 @@ jobs:
           if [ "$VERSION" != "$CODE_VERSION" ]; then
             echo "::error::tag $TAG does not match the version in backend/pyproject.toml ($CODE_VERSION)"; exit 1
           fi
+          # Looked up by name: the folder layout inside an artifact depends on which files it holds.
+          built() {
+            local file; file=$(find artifacts -type f -name "$1" | head -n 1)
+            if [ -z "$file" ]; then echo "::error::$1 was not built" >&2; exit 1; fi
+            echo "$file"
+          }
           mkdir out
-          cp artifacts/*/dist-desktop/Cockpit-"$VERSION"-mac-arm64.dmg \
-             artifacts/*/dist-desktop/Cockpit-"$VERSION"-windows-x64-setup.exe \
-             artifacts/*/dist-desktop/Cockpit-"$VERSION"-windows-x64.zip out/
+          for name in mac-arm64.dmg windows-x64-setup.exe windows-x64.zip; do
+            file=$(built "Cockpit-$VERSION-$name"); cp "$file" out/
+          done
+          MIN_MACOS=$(cat "$(built "Cockpit-$VERSION-mac-arm64.min-macos.txt")")
           (cd out && sha256sum Cockpit-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
           gh release create "$TAG" out/* --verify-tag --title "Cockpit $VERSION" --notes-file desktop/RELEASE_NOTES.md
           python3 scripts/write-manifests.py --version "$VERSION" --repo "$GITHUB_REPOSITORY" \
-            --min-macos "$(cat artifacts/*/dist-desktop/Cockpit-"$VERSION"-mac-arm64.min-macos.txt)" \
+            --min-macos "$MIN_MACOS" \
             --dmg-sha256 "$(sha256sum out/Cockpit-"$VERSION"-mac-arm64.dmg | cut -d' ' -f1)" \
             --zip-sha256 "$(sha256sum out/Cockpit-"$VERSION"-windows-x64.zip | cut -d' ' -f1)"
           git config user.name "github-actions[bot]"

@@ -12,6 +12,7 @@ permissions:
 jobs:
   homebrew:
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - name: Install with Homebrew
         run: |
@@ -38,6 +39,7 @@ jobs:
 
   scoop:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: Install with Scoop
         shell: pwsh

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+import threading
+from collections.abc import Callable, Mapping
 from datetime import date
 from pathlib import Path
 
@@ -44,3 +45,19 @@ def snapshot_database(db: Path, backups: Path, today: date, keep: int) -> Path |
     for old in sorted(backups.glob("cockpit-*.db"))[:-keep]:
         old.unlink(missing_ok=True)
     return target
+
+
+def start_watchdog(seconds: float, on_expire: Callable[[], None]) -> threading.Timer:
+    """Call `on_expire` after `seconds` unless cancelled first.
+
+    A daemon thread, so it never keeps a finished process alive.
+    """
+    timer = threading.Timer(seconds, on_expire)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def timed_out_report(seen: Mapping[str, object], stage: str, seconds: float) -> dict[str, object]:
+    """The self-test report for a run that got stuck: what was seen so far, marked as failed."""
+    return {**seen, "ready": False, "error": f"self-test timed out after {seconds:.0f}s while {stage}"}

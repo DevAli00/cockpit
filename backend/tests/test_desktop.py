@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import AsyncIterator
 from datetime import date
 from pathlib import Path
@@ -11,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 from app.core.config import Settings
-from app.core.desktop import data_dir, snapshot_database
+from app.core.desktop import data_dir, snapshot_database, start_watchdog, timed_out_report
 from app.db.bootstrap import ensure_schema
 from app.db.session import make_engine
 from app.main import create_app
@@ -223,3 +224,25 @@ async def test_cancelled_dialog_is_reported(tmp_path: Path, web: Path) -> None:
 
 async def test_no_native_dialog_on_the_server_version(api: AsyncClient) -> None:
     assert (await api.post("/api/desktop/backup-file")).status_code == 404
+
+
+def test_watchdog_fires_unless_cancelled() -> None:
+    fired = threading.Event()
+    start_watchdog(0.01, fired.set)
+    assert fired.wait(2)
+
+    quiet = threading.Event()
+    timer = start_watchdog(0.2, quiet.set)
+    assert timer.daemon  # must never keep a finished app alive
+    timer.cancel()
+    assert not quiet.wait(0.5)
+
+
+def test_timed_out_report_keeps_what_was_seen_but_fails() -> None:
+    seen = {"ready": True, "brand": "Cockpit"}
+    report = timed_out_report(seen, "waiting for the page", 90)
+    assert report == {
+        "ready": False, "brand": "Cockpit",
+        "error": "self-test timed out after 90s while waiting for the page",
+    }
+    assert seen == {"ready": True, "brand": "Cockpit"}  # the input is left alone

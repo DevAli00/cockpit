@@ -23,7 +23,9 @@ import uvicorn
 from sqlalchemy.engine import URL
 
 from app.core.config import Settings
-from app.core.desktop import APP_NAME, DB_FILE, data_dir, snapshot_database
+from app.core.desktop import (
+    APP_NAME, DB_FILE, data_dir, snapshot_database, start_watchdog, timed_out_report,
+)
 from app.main import create_app
 
 log = logging.getLogger("cockpit.desktop")
@@ -33,6 +35,11 @@ STARTUP_TIMEOUT_S = 30.0
 BROWSER_IDLE_EXIT_S = 12 * 3600  # browser-fallback mode has no window to close: stop when unused
 WINDOW_SIZE = (1280, 860)
 WINDOW_MIN_SIZE = (900, 600)
+SELFTEST_PAGE_TIMEOUT_S = 40.0
+# Hard limit for a whole self-test run. A web view that never answers blocks run_js for good, and
+# a build machine would then wait for hours: past this limit the app reports and quits by force.
+SELFTEST_TIMEOUT_S = 90.0
+SELFTEST_TIMEOUT_EXIT = 3
 
 SELFTEST_PATH = "/__selftest__"
 # Runs inside the page (no eval: the app's Content-Security-Policy forbids it) and posts what it
@@ -160,6 +167,7 @@ class SelftestCapture(ActivityTracker):
         super().__init__(app)
         self.reported = threading.Event()
         self.report: dict[str, Any] = {"ready": False, "error": "no report from the page"}
+        self.stage = "starting"  # what the run was doing, for the report of a stuck run
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http" or scope["path"] != SELFTEST_PATH:
@@ -179,15 +187,39 @@ class SelftestCapture(ActivityTracker):
 
 def _selftest(window: Any, capture: SelftestCapture, out: Path) -> None:
     """Drive the real window once and write what it saw (used to verify packaged builds)."""
-    deadline = time.monotonic() + 40
+    deadline = time.monotonic() + SELFTEST_PAGE_TIMEOUT_S
     while time.monotonic() < deadline and not capture.reported.is_set():
+        capture.stage = "running a script in the page (the web view did not answer)"
         try:
             window.run_js(SELFTEST_JS)  # re-injected until the app page (not the redirect) has it
         except Exception as exc:
+            log.exception("self-test: could not run the script in the page")
             capture.report = {"ready": False, "error": repr(exc)}
+        capture.stage = "waiting for the page to report"
         capture.reported.wait(2)
     out.write_text(json.dumps(capture.report, indent=2), encoding="utf-8")
+    log.info("self-test: reported=%s", capture.reported.is_set())
+    capture.stage = "closing the window"
     window.destroy()
+
+
+def _abort_selftest(out: Path, capture: SelftestCapture) -> None:
+    """Watchdog: the self-test is stuck. Write what is known and quit without waiting for the GUI."""
+    if capture.reported.is_set():  # the page did its part; only the shutdown hung
+        report: dict[str, Any] = {**capture.report, "forcedExit": True}
+    else:
+        report = timed_out_report(capture.report, capture.stage, SELFTEST_TIMEOUT_S)
+    log.error("self-test: forced exit while %s", capture.stage)
+    try:
+        out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    finally:
+        logging.shutdown()
+        os._exit(SELFTEST_TIMEOUT_EXIT)  # the GUI loop may be what is stuck: sys.exit would wait for it
+
+
+def _fail_selftest(out: Path, error: str) -> None:
+    """The self-test could not even show a window: say why instead of leaving no report."""
+    out.write_text(json.dumps({"ready": False, "error": error}, indent=2), encoding="utf-8")
 
 
 def _error_page(log_file: Path) -> str:
@@ -231,6 +263,11 @@ def main() -> int:
     bridge = SelftestBridge(folder) if selftest and not real_dialog else WindowBridge()
     app = create_app(settings, desktop_bridge=bridge)
     tracker = SelftestCapture(app) if selftest else ActivityTracker(app)
+    capture = tracker if isinstance(tracker, SelftestCapture) else None
+    report_to = Path(selftest) if selftest else None
+    if capture is not None and report_to is not None:
+        start_watchdog(SELFTEST_TIMEOUT_S, lambda: _abort_selftest(report_to, capture))
+        capture.stage = "starting the local server"
     server = LocalServer(tracker)
     started = server.start()
     url = f"http://127.0.0.1:{server.port}/api/auth/desktop?token={token}"
@@ -238,8 +275,12 @@ def main() -> int:
 
     try:
         import webview
-    except Exception:
+    except Exception as exc:
         log.exception("native web view unavailable")
+        if report_to is not None:  # a self-test must end, not wait in the browser fallback
+            _fail_selftest(report_to, f"native web view unavailable: {exc!r}")
+            server.stop()
+            return 1
         if started:
             _serve_in_browser(url, tracker)
         server.stop()
@@ -254,12 +295,19 @@ def main() -> int:
             window = webview.create_window(APP_NAME, html=_error_page(folder / "cockpit.log"), width=640, height=320)
         bridge.window = window
         kwargs: dict[str, Any] = {"gui": "edgechromium"} if sys.platform == "win32" else {}
-        if isinstance(tracker, SelftestCapture) and selftest and started:
-            webview.start(_selftest, (window, tracker, Path(selftest)), **kwargs)
+        if capture is not None and report_to is not None:
+            if not started:
+                _fail_selftest(report_to, "the local server did not start")
+                return 1
+            capture.stage = "opening the window"
+            webview.start(_selftest, (window, capture, report_to), **kwargs)
         else:
             webview.start(**kwargs)
-    except Exception:
+    except Exception as exc:
         log.exception("window failed")
+        if report_to is not None:
+            _fail_selftest(report_to, f"window failed: {exc!r}")
+            return 1
         if started:
             _serve_in_browser(url, tracker)
     finally:
